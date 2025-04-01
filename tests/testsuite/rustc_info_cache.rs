@@ -6,9 +6,18 @@ use cargo_test_support::basic_bin_manifest;
 use cargo_test_support::prelude::*;
 use cargo_test_support::{basic_manifest, project};
 
-const MISS: &str = "[..] rustc info cache miss[..]";
-const HIT: &str = "[..]rustc info cache hit[..]";
-const UPDATE: &str = "[..]updated rustc info cache[..]";
+// Here, we distinguish between a cache hit where the command succeeded versus
+// a cache hit where the command failed. Commands that fail are recorded into
+// the cache, but are re-run anyways.
+//
+// Beware of checking for the absence of failure, as a probe for supported
+// rustc flags may fail under normal conditions, such as when a new feature
+// is added. See Cargo issue #15358 for details.
+const MISS: &str = "[..] rustc info cache miss (MissNoEntry)[..]";
+const HIT_SUCCESS: &str = "[..]rustc info cache hit (HitSuccess)[..]";
+const HIT_FAILURE: &str = "[..]rustc info cache hit (HitFailure)[..]";
+const UPDATE_NEWCACHE: &str = "[..]updated rustc info cache (NewCache)[..]";
+const UPDATE_FAILURE: &str = "[..]updated rustc info cache (HitFailure)[..]";
 
 #[cargo_test]
 fn rustc_info_cache() {
@@ -20,23 +29,23 @@ fn rustc_info_cache() {
         .env("CARGO_LOG", "cargo::util::rustc=debug")
         .with_stderr_contains("[..]failed to read rustc info cache[..]")
         .with_stderr_contains(MISS)
-        .with_stderr_does_not_contain(HIT)
-        .with_stderr_contains(UPDATE)
+        .with_stderr_does_not_contain(HIT_SUCCESS)
+        .with_stderr_contains(UPDATE_NEWCACHE)
         .run();
 
     p.cargo("build")
         .env("CARGO_LOG", "cargo::util::rustc=debug")
         .with_stderr_contains("[..]reusing existing rustc info cache[..]")
-        .with_stderr_contains(HIT)
+        .with_stderr_contains(HIT_SUCCESS)
         .with_stderr_does_not_contain(MISS)
-        .with_stderr_does_not_contain(UPDATE)
+        .with_stderr_does_not_contain(UPDATE_NEWCACHE)
         .run();
 
     p.cargo("build")
         .env("CARGO_LOG", "cargo::util::rustc=debug")
         .env("CARGO_CACHE_RUSTC_INFO", "0")
         .with_stderr_contains("[..]rustc info cache disabled[..]")
-        .with_stderr_does_not_contain(UPDATE)
+        .with_stderr_does_not_contain(UPDATE_NEWCACHE)
         .run();
 
     let other_rustc = {
@@ -71,17 +80,17 @@ fn rustc_info_cache() {
         .env("RUSTC", other_rustc.display().to_string())
         .with_stderr_contains("[..]different compiler, creating new rustc info cache[..]")
         .with_stderr_contains(MISS)
-        .with_stderr_does_not_contain(HIT)
-        .with_stderr_contains(UPDATE)
+        .with_stderr_does_not_contain(HIT_SUCCESS)
+        .with_stderr_contains(UPDATE_NEWCACHE)
         .run();
 
     p.cargo("build")
         .env("CARGO_LOG", "cargo::util::rustc=debug")
         .env("RUSTC", other_rustc.display().to_string())
         .with_stderr_contains("[..]reusing existing rustc info cache[..]")
-        .with_stderr_contains(HIT)
+        .with_stderr_contains(HIT_SUCCESS)
         .with_stderr_does_not_contain(MISS)
-        .with_stderr_does_not_contain(UPDATE)
+        .with_stderr_does_not_contain(UPDATE_NEWCACHE)
         .run();
 
     other_rustc.move_into_the_future();
@@ -91,17 +100,17 @@ fn rustc_info_cache() {
         .env("RUSTC", other_rustc.display().to_string())
         .with_stderr_contains("[..]different compiler, creating new rustc info cache[..]")
         .with_stderr_contains(MISS)
-        .with_stderr_does_not_contain(HIT)
-        .with_stderr_contains(UPDATE)
+        .with_stderr_does_not_contain(HIT_SUCCESS)
+        .with_stderr_contains(UPDATE_NEWCACHE)
         .run();
 
     p.cargo("build")
         .env("CARGO_LOG", "cargo::util::rustc=debug")
         .env("RUSTC", other_rustc.display().to_string())
         .with_stderr_contains("[..]reusing existing rustc info cache[..]")
-        .with_stderr_contains(HIT)
+        .with_stderr_contains(HIT_SUCCESS)
         .with_stderr_does_not_contain(MISS)
-        .with_stderr_does_not_contain(UPDATE)
+        .with_stderr_does_not_contain(UPDATE_NEWCACHE)
         .run();
 }
 
@@ -149,16 +158,16 @@ fn rustc_info_cache_with_wrappers() {
             .env(wrapper_env, &wrapper)
             .with_stderr_contains("[..]failed to read rustc info cache[..]")
             .with_stderr_contains(MISS)
-            .with_stderr_contains(UPDATE)
-            .with_stderr_does_not_contain(HIT)
+            .with_stderr_contains(UPDATE_NEWCACHE)
+            .with_stderr_does_not_contain(HIT_SUCCESS)
             .with_status(0)
             .run();
         p.cargo("build")
             .env("CARGO_LOG", "cargo::util::rustc=debug")
             .env(wrapper_env, &wrapper)
             .with_stderr_contains("[..]reusing existing rustc info cache[..]")
-            .with_stderr_contains(HIT)
-            .with_stderr_does_not_contain(UPDATE)
+            .with_stderr_contains(HIT_SUCCESS)
+            .with_stderr_does_not_contain(UPDATE_NEWCACHE)
             .with_stderr_does_not_contain(MISS)
             .with_status(0)
             .run();
@@ -171,16 +180,18 @@ fn rustc_info_cache_with_wrappers() {
             .env(wrapper_env, &wrapper)
             .with_stderr_contains("[..]different compiler, creating new rustc info cache[..]")
             .with_stderr_contains(MISS)
-            .with_stderr_contains(UPDATE)
-            .with_stderr_does_not_contain(HIT)
+            .with_stderr_contains(UPDATE_NEWCACHE)
+            .with_stderr_does_not_contain(HIT_SUCCESS)
             .with_status(101)
             .run();
         p.cargo("build")
             .env("CARGO_LOG", "cargo::util::rustc=debug")
             .env(wrapper_env, &wrapper)
             .with_stderr_contains("[..]reusing existing rustc info cache[..]")
-            .with_stderr_contains(HIT)
-            .with_stderr_does_not_contain(UPDATE)
+            .with_stderr_does_not_contain(HIT_SUCCESS)
+            .with_stderr_contains(HIT_FAILURE)
+            .with_stderr_does_not_contain(UPDATE_NEWCACHE)
+            .with_stderr_contains(UPDATE_FAILURE)
             .with_stderr_does_not_contain(MISS)
             .with_status(101)
             .run();

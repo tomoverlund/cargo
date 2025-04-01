@@ -172,7 +172,19 @@ impl Rustc {
 struct Cache {
     cache_location: Option<PathBuf>,
     dirty: bool,
+    dirty_reason: CacheReason,
     data: CacheData,
+}
+
+/// These are used in debug! messages, which testsuite/rustc_info_cache.rs
+/// relies on for testing. See Cargo issue #15358 for further motivation.
+#[derive(Debug)]
+enum CacheReason {
+    NotDirty,
+    NewCache,
+    HitSuccess,
+    HitFailure,
+    MissNoEntry,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default)]
@@ -211,11 +223,13 @@ impl Cache {
                     successes: HashMap::new(),
                 };
                 let mut dirty = true;
+                let mut dirty_reason = CacheReason::NewCache;
                 let data = match read(&cache_location) {
                     Ok(data) => {
                         if data.rustc_fingerprint == rustc_fingerprint {
                             debug!("reusing existing rustc info cache");
                             dirty = false;
+                            dirty_reason = CacheReason::NotDirty;
                             data
                         } else {
                             debug!("different compiler, creating new rustc info cache");
@@ -230,6 +244,7 @@ impl Cache {
                 return Cache {
                     cache_location: Some(cache_location),
                     dirty,
+                    dirty_reason,
                     data,
                 };
 
@@ -246,6 +261,7 @@ impl Cache {
                 Cache {
                     cache_location: None,
                     dirty: false,
+                    dirty_reason: CacheReason::NotDirty,
                     data: CacheData::default(),
                 }
             }
@@ -258,10 +274,19 @@ impl Cache {
         extra_fingerprint: u64,
     ) -> CargoResult<(String, String)> {
         let key = process_fingerprint(cmd, extra_fingerprint);
-        if self.data.outputs.contains_key(&key) {
-            debug!("rustc info cache hit");
+        if self.data.outputs.contains_key(&key) && self.data.outputs[&key].success {
+            debug!("rustc info cache hit ({:?})", CacheReason::HitSuccess);
         } else {
-            debug!("rustc info cache miss");
+            let reason: CacheReason = if self.data.outputs.contains_key(&key) {
+                debug!(
+                    "rustc info cache hit ({:?}), re-running on failure",
+                    CacheReason::HitFailure
+                );
+                CacheReason::HitFailure
+            } else {
+                debug!("rustc info cache miss ({:?})", CacheReason::MissNoEntry);
+                CacheReason::MissNoEntry
+            };
             debug!("running {}", cmd);
             let output = cmd.output()?;
             let stdout = String::from_utf8(output.stdout)
@@ -284,7 +309,11 @@ impl Cache {
                     stderr,
                 },
             );
-            self.dirty = true;
+            // Don't overwrite the old reason.
+            if !self.dirty {
+                self.dirty = true;
+                self.dirty_reason = reason;
+            }
         }
         let output = &self.data.outputs[&key];
         if output.success {
@@ -310,7 +339,7 @@ impl Drop for Cache {
         if let Some(ref path) = self.cache_location {
             let json = serde_json::to_string(&self.data).unwrap();
             match paths::write(path, json.as_bytes()) {
-                Ok(()) => info!("updated rustc info cache"),
+                Ok(()) => info!("updated rustc info cache ({:?})", self.dirty_reason),
                 Err(e) => warn!("failed to update rustc info cache: {}", e),
             }
         }
